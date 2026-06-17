@@ -876,3 +876,215 @@ This approach minimizes database load, improves response times, supports real-ti
 
 Fetching notifications on every page load is inefficient and does not scale well. By combining Redis caching, WebSockets, pagination, read replicas, and notification archiving, the platform can significantly reduce database load while providing a fast and responsive user experience.
 
+
+# Stage 5
+
+## Problems with the Current Implementation
+
+Current pseudocode:
+
+```text
+function notify_all(student_ids, message):
+    for student_id in student_ids:
+        send_email(student_id, message)
+        save_to_db(student_id, message)
+        push_to_app(student_id, message)
+```
+
+### Shortcomings
+
+1. Sequential Processing
+
+   * Notifications are processed one student at a time.
+   * Sending notifications to 50,000 students will take a very long time.
+
+2. Email Failure Causes Inconsistency
+
+   * Logs show that email delivery failed for 200 students.
+   * Some students may receive in-app notifications while others do not receive emails.
+
+3. Tight Coupling
+
+   * Email sending, database writes, and push notifications are tightly coupled.
+   * Failure in one component can affect the entire process.
+
+4. Poor Scalability
+
+   * The solution cannot efficiently handle large notification campaigns.
+
+5. No Retry Mechanism
+
+   * Temporary email service failures result in permanently lost notifications.
+
+---
+
+## Recommended Design
+
+Separate notification creation from notification delivery.
+
+### Step 1: Save Notifications First
+
+The database should be treated as the source of truth.
+
+```text
+Create notification records for all students.
+```
+
+### Step 2: Publish Events to a Queue
+
+Push notification jobs into a message queue such as:
+
+* RabbitMQ
+* Apache Kafka
+* Amazon SQS
+
+### Step 3: Worker Services Process Deliveries
+
+Separate worker services handle:
+
+* Email delivery
+* In-app notification delivery
+* Future SMS or push notification delivery
+
+This allows horizontal scaling.
+
+---
+
+## Revised Pseudocode
+
+```text
+function notify_all(student_ids, message):
+
+    notifications = []
+
+    for student_id in student_ids:
+
+        notification = {
+            student_id: student_id,
+            message: message,
+            status: "PENDING"
+        }
+
+        notifications.append(notification)
+
+    bulk_insert_notifications(notifications)
+
+    for notification in notifications:
+
+        publish_to_queue({
+            notification_id: notification.id
+        })
+```
+
+### Email Worker
+
+```text
+function email_worker(job):
+
+    try:
+
+        send_email(job.student_id, job.message)
+
+        update_status(job.notification_id, "EMAIL_SENT")
+
+    catch error:
+
+        retry(job)
+```
+
+### App Notification Worker
+
+```text
+function app_worker(job):
+
+    push_to_app(job.student_id, job.message)
+
+    update_status(job.notification_id, "APP_SENT")
+```
+
+---
+
+## Handling Email Failures
+
+The log indicates that email delivery failed for 200 students.
+
+Recommended approach:
+
+1. Store all notifications in the database first.
+2. Mark failed deliveries.
+3. Retry automatically using exponential backoff.
+4. Send failed jobs to a Dead Letter Queue after retry limits are exceeded.
+5. Allow administrators to reprocess failed notifications.
+
+This prevents data loss.
+
+---
+
+## Should Database Save and Email Sending Happen Together?
+
+No.
+
+Saving to the database and sending emails should be separated.
+
+### Reason
+
+The database represents the permanent record of notifications.
+
+If email sending fails but the notification is stored:
+
+* The user still sees the notification in the application.
+* Delivery can be retried later.
+* No notification is lost.
+
+If both operations are tightly coupled:
+
+* Email failure may cause the entire transaction to fail.
+* Users may never receive the notification.
+
+Therefore:
+
+```text
+Save First → Queue Job → Deliver Asynchronously
+```
+
+is the preferred architecture.
+
+---
+
+## Performance Benefits
+
+### Existing Approach
+
+```text
+Time Complexity: O(N)
+```
+
+with network latency for every email and notification delivery.
+
+For 50,000 students this can take several minutes.
+
+### Improved Approach
+
+```text
+Bulk Database Insert
++
+Queue-Based Processing
++
+Parallel Workers
+```
+
+Benefits:
+
+* Faster notification creation.
+* Better fault tolerance.
+* Improved scalability.
+* Supports millions of notifications.
+* Reliable retry handling.
+
+---
+
+## Conclusion
+
+The original implementation is slow, tightly coupled, and vulnerable to failures. A queue-based architecture with bulk database inserts, asynchronous workers, retry mechanisms, and dead-letter queues provides a scalable and reliable solution capable of delivering notifications to tens of thousands of students efficiently.
+
+
