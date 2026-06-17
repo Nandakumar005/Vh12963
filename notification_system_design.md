@@ -1088,3 +1088,43 @@ Benefits:
 The original implementation is slow, tightly coupled, and vulnerable to failures. A queue-based architecture with bulk database inserts, asynchronous workers, retry mechanisms, and dead-letter queues provides a scalable and reliable solution capable of delivering notifications to tens of thousands of students efficiently.
 
 
+# Stage 6
+
+## Approach
+
+Notifications are prioritized using weighted ranking.
+
+Priority Order:
+
+1. Placement
+2. Result
+3. Event
+
+A numerical weight is assigned:
+
+- Placement = 3
+- Result = 2
+- Event = 1
+
+Unread notifications are filtered first.
+
+The notifications are then sorted by:
+
+1. Priority (highest first)
+2. Timestamp (newest first within the same priority)
+
+Finally, only the top N notifications are returned.
+
+### Time Complexity
+
+Filtering: O(n)
+
+Sorting: O(n log n)
+
+Selecting Top N: O(n)
+
+Overall Complexity: O(n log n)
+
+### Handling New Notifications
+
+Whenever a new notification arrives, it is added to the notification list and the ranking function is executed again to maintain the correct priority order.
